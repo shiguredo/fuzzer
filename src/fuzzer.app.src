@@ -1,0 +1,16 @@
+{application, fuzzer,
+ [{description, "Fuzz Erlang targets with libFuzzer"},
+  % バージョンはリポジトリ直下の VERSION を唯一の情報源とする
+  {vsn, {cmd, "cat VERSION | tr -d \"\n\""}},
+  {registered, []},
+  {applications, [kernel, stdlib, crypto]},
+  {env, []},
+  {licenses, ["Apache-2.0"]},
+  {links, [{"GitHub", "https://github.com/shiguredo/fuzzer"}]},
+  {files, ["README.md",
+           "LICENSE",
+           "Makefile",
+           "rebar.config",
+           "rebar.lock",
+           "src",
+           "c_src"]}]}.

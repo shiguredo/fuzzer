@@ -1,0 +1,8 @@
+/_build/
+/rebar3_fuzzer/_build/
+/erl_crash.dump
+/priv/*.so
+/priv/*.dSYM/
+# canary.py などの Python スクリプトを実行したときに生成される
+__pycache__/
+*.pyc

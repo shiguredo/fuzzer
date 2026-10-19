@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - develop
+    paths-ignore:
+      - "LICENSE"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "LICENSE"
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # ビルドとテストで使う Erlang/OTP と AWS-LC のバージョン
+  OTP_VERSION: "29.1.2"
+  AWS_LC_VERSION: "v5.11.0"
+  # rebar3 は escript なのでプラットフォームに依存しないバイナリーを直接取得する
+  REBAR3_VERSION: "3.27.3"
+  REBAR3_SHA256: "f1d87d78decfc56b87d971c75ee6355698ec0c49fadd57f2c056043b7ca291b5"
+
+jobs:
+  # prek.toml のフックをすべて実行する (efmt / efmt-check / elint など)
+  check:
+    runs-on: ubuntu-slim
+    # prek の hook 環境準備 (初回や cache miss) を見込んで余裕を持たせる
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: j178/prek-action@1382ad72dea72f9d53832f2bcb65b3e87a947204 # v3.0.1
+
+  test:
+    name: test (${{ matrix.os }})
+    # ubuntu-slim は 1 vCPU / 15 分のプラットフォーム上限がある。Clang と
+    # libFuzzer ランタイムの導入、NIF のビルド、fuzz smoke を含めるため
+    # ubuntu-26.04 系の runner を使う
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
+          - macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # ビルド済みの Erlang/OTP 29.1.2 + AWS-LC v5.11.0 を使う
+      # (rebar.config の minimum_otp_vsn は 29.1)
+      # dialyzer は実行しないため PLT のダウンロードは不要
+      - uses: shiguredo/setup-erlang@798490d396314704f64d3218c1eeae49498a3a66 # main (2026-10-14)
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          aws-lc-version: ${{ env.AWS_LC_VERSION }}
+          use-plt: "false"
+          use-cache: "true"
+
+      - name: rebar3 をインストールする
+        shell: bash
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/rebar3" \
+            "https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3"
+          echo "${REBAR3_SHA256}  ${RUNNER_TEMP}/rebar3" | shasum -a 256 -c -
+          chmod +x "${RUNNER_TEMP}/rebar3"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      # Ubuntu 26.04 の clang は libFuzzer のランタイムを同梱していないため、
+      # clang のメジャーバージョンに合わせて compiler-rt を導入する
+      # llvm はクラッシュ時のシンボル解決に、xxd は初期コーパスの変換に使う
+      - name: Clang と libFuzzer ランタイムをインストールする
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm xxd
+          clang_major="$(clang -dumpversion | cut -d. -f1)"
+          sudo apt-get install -y --no-install-recommends "libclang-rt-${clang_major}-dev"
+
+      # Xcode に付属する Apple Clang は libFuzzer のランタイムを含まない場合が
+      # あるため、Makefile が優先して使う Homebrew LLVM を導入する
+      - name: Homebrew LLVM をインストールする
+        if: runner.os == 'macOS'
+        run: brew install llvm
+
+      - name: ツールチェーンを確認する
+        run: make toolchain-info
+
+      - name: ビルドする
+        run: make compile
+
+      - name: テストする
+        run: make test
+
+      - name: fuzzing を smoke 実行する
+        run: make fuzz-smoke
