@@ -14,7 +14,8 @@ run(Encoded) ->
     Options = binary_to_term(base64:decode(Encoded)),
     Result = fuzzer:run(Options),
     print_coverage(maps:get(coverage, Result)),
-    halt(maps:get(exit_code, Result)).
+    print_crashes(maps:get(crashes, Result)),
+    halt(exit_code(Result)).
 
 
 %% fuzzer:reproduce/2 を実行し、結果に応じた終了コードで halt する。
@@ -32,6 +33,28 @@ reproduce(Encoded) ->
             io:format("ERROR: ~p~n", [Reason]),
             halt(2)
     end.
+
+
+%% クラッシュを検出した場合は、libFuzzer の終了コードが 0 でも失敗として扱う。
+-spec exit_code(fuzzer:result()) -> non_neg_integer().
+exit_code(#{exit_code := 0, crashes := [_ | _]}) ->
+    1;
+exit_code(#{exit_code := ExitCode}) ->
+    ExitCode.
+
+
+%% 検出したクラッシュの概要を表示する。
+-spec print_crashes([map()]) -> ok.
+print_crashes([]) ->
+    ok;
+print_crashes(Crashes) ->
+    io:format("Crashes: ~p~n", [length(Crashes)]),
+    lists:foreach(fun(Report) ->
+                          io:format("  ~s ~p~n",
+                                    [maps:get(input_sha1, Report),
+                                     maps:get(crash_id, Report)])
+                  end,
+                  Crashes).
 
 
 %% cover を指定した場合だけカバレッジを表示する。

@@ -5,16 +5,14 @@
 -export([evaluate/1]).
 
 
--spec evaluate(binary()) -> {ok, non_neg_integer()} | crash.
+-spec evaluate(binary()) -> {ok, non_neg_integer()}.
 evaluate(Data) ->
-    try fuzzer_example_sdp:decode(Data) of
+    % 例外は捕捉せず fuzzer に渡す。クラッシュレポートに理由とスタックトレースが残る。
+    case fuzzer_example_sdp:decode(Data) of
         {ok, Description} ->
             {ok, success_features(Description)};
         {error, Reason} ->
             {ok, error_feature(Reason)}
-    catch
-        _Class:_Reason:_Stacktrace ->
-            crash
     end.
 
 

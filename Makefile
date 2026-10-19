@@ -29,6 +29,9 @@ CLANG_RUNTIME_DIR := $(shell $(CC) --print-runtime-dir)
 # その場合は親の lib ディレクトリー配下に libFuzzer のランタイムが置かれる。
 CLANG_LIB_DIR := $(abspath $(CLANG_RUNTIME_DIR)/..)
 LINUX_ARCH := $(shell uname -m)
+# libFuzzer は compiler-rt の一部であり、Clang と同じバージョンで配布される。
+# ビルドに使う Clang のバージョンを NIF へ埋め込み、Erlang から確認できるようにする。
+LIBFUZZER_VERSION := $(shell $(CC) -dumpversion)
 
 CFLAGS := -std=c11 -Wall -Wextra -Werror
 
@@ -51,7 +54,8 @@ FUZZER_NO_MAIN := $(firstword $(wildcard \
 NIF_CXX_RUNTIME := -lstdc++
 endif
 
-NIF_CFLAGS := $(CFLAGS) -g -O1 -fPIC -fno-omit-frame-pointer -fsanitize=fuzzer-no-link -I$(ERTS_INCLUDE_DIR)
+NIF_CFLAGS := $(CFLAGS) -g -O1 -fPIC -fno-omit-frame-pointer -fsanitize=fuzzer-no-link -I$(ERTS_INCLUDE_DIR) \
+              -DFUZZER_LIBFUZZER_VERSION='"$(LIBFUZZER_VERSION)"'
 
 .PHONY: all compile erlang nif test plugin-test lint fuzz-smoke fuzz-rtp fuzz-rtp-smoke fuzz-sdp fuzz-sdp-smoke clean prepare-rtp prepare-sdp toolchain-info publish
 
@@ -117,6 +121,7 @@ toolchain-info:
 	$(CC) --print-runtime-dir
 	@if [ -n "$(FUZZER_NO_MAIN)" ]; then \
 		echo "libFuzzer runtime: $(FUZZER_NO_MAIN)"; \
+		echo "libFuzzer version: $(LIBFUZZER_VERSION)"; \
 	else \
 		echo "libclang_rt.fuzzer_no_main が見つかりません。" >&2; \
 		exit 1; \

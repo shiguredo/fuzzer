@@ -96,6 +96,10 @@ examples/
 
 `rebar3_fuzzer` は独立したバージョンで管理しており、`rebar3_fuzzer/src/rebar3_fuzzer.app.src` の `vsn` で指定する。
 
+NIF に静的リンクする libFuzzer のバージョンは、ビルドに使う Clang のバージョンから `Makefile` が決定し、NIF へ埋め込む。
+`fuzzer:libfuzzer_version/0` と `make toolchain-info` で確認できる。
+Clang を更新した場合は `make clean` を実行してから NIF を再ビルドする。
+
 ### canary リリース
 
 canary リリースでは `canary.py` を使う。`develop` ブランチで実行する。
@@ -135,4 +139,5 @@ $ cd rebar3_fuzzer && rebar3 hex build
 ```
 
 Hex へ公開する場合は、Hex の API キーを設定したうえで `rebar3 hex publish` を実行する。
-`fuzzer` と `rebar3_fuzzer` は現在まだ公開していない。
+`fuzzer` は `2026.1.0-canary.0` を Hex で公開済みである。
+`rebar3_fuzzer` はまだ公開していない。

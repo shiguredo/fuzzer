@@ -11,6 +11,30 @@ crash_artifact_test_() ->
     {timeout, 30, fun crash_artifact/0}.
 
 
+continue_on_crash_test_() ->
+    {timeout, 30, fun continue_on_crash/0}.
+
+
+continue_on_exception_test_() ->
+    {timeout, 30, fun continue_on_exception/0}.
+
+
+continue_on_timeout_test_() ->
+    {timeout, 30, fun continue_on_timeout/0}.
+
+
+continue_multiple_crashes_test_() ->
+    {timeout, 30, fun continue_multiple_crashes/0}.
+
+
+crash_line_distinguishes_test_() ->
+    {timeout, 30, fun crash_line_distinguishes/0}.
+
+
+auto_dict_cleanup_test_() ->
+    {timeout, 30, fun auto_dict_cleanup/0}.
+
+
 run_options_test_() ->
     {timeout, 30, fun run_options/0}.
 
@@ -59,6 +83,20 @@ reproduce_test_() ->
     {timeout, 30, fun reproduce/0}.
 
 
+libfuzzer_version_test() ->
+    % NIF に静的リンクした libFuzzer のバージョンが、空でない数値形式で返ることを確認する。
+    Version = fuzzer:libfuzzer_version(),
+    ?assert(is_binary(Version)),
+    ?assertEqual(match, re:run(Version, <<"^[0-9]+(\\.[0-9]+)*$">>, [{capture, none}])).
+
+
+max_feedback_counters_test() ->
+    % NIF がフィードバックカウンターの上限を正の整数で返すことを確認する。
+    Max = fuzzer:max_feedback_counters(),
+    ?assert(is_integer(Max)),
+    ?assert(Max > 0).
+
+
 option_validation_test_() ->
     [?_assertError({invalid_option, {missing, target}},
                    fuzzer:run(#{})),
@@ -77,6 +115,53 @@ option_validation_test_() ->
                    fuzzer:run(#{
                                 target => fuzzer_test_target,
                                 extra_args => ["-jobs=2"]
+                               })),
+     ?_assertError({invalid_option, {feedback, {module, 123}}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                feedback => [123]
+                               })),
+     ?_assertError({invalid_option, {feedback, {mode, invalid}}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                feedback => #{
+                                              modules => [fuzzer_test_target],
+                                              mode => invalid
+                                             }
+                               })),
+     ?_assertError({invalid_option, {feedback, {unknown, [bogus]}}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                feedback => #{
+                                              modules => [fuzzer_test_target],
+                                              bogus => true
+                                             }
+                               })),
+     ?_assertError({invalid_option, {feedback, incompatible_with_cover}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                feedback => [fuzzer_test_target],
+                                cover => [fuzzer_test_target]
+                               })),
+     ?_assertError({invalid_option, {on_crash, bogus}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                on_crash => bogus
+                               })),
+     ?_assertError({invalid_option, {auto_dict, invalid}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                auto_dict => invalid
+                               })),
+     ?_assertError({invalid_option, {dict_modules, 123}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                dict_modules => [123]
+                               })),
+     ?_assertError({invalid_option, {dict_modules, fuzzer_test_target}},
+                   fuzzer:run(#{
+                                target => fuzzer_test_target,
+                                dict_modules => fuzzer_test_target
                                }))].
 
 
@@ -129,6 +214,238 @@ crash_artifact() ->
     end.
 
 
+%% クラッシュしても BEAM を終了せず、重複を除いたクラッシュを返す。
+continue_on_crash() ->
+    TestDir = test_directory(),
+    CorpusDir = filename:join(TestDir, "corpus"),
+    ArtifactDir = filename:join(TestDir, "artifacts"),
+    try
+        ok = prepare_directories(CorpusDir, ArtifactDir),
+        ok = file:write_file(filename:join(CorpusDir, "seed"), <<0>>),
+        Result =
+            fuzzer:run(#{
+                         target => fuzzer_crash_target,
+                         runs => 1000,
+                         max_length => 8,
+                         corpus => CorpusDir,
+                         artifacts => ArtifactDir,
+                         on_crash => continue
+                        }),
+        ?assertEqual(0, maps:get(exit_code, Result)),
+        Crashes = maps:get(crashes, Result),
+        ?assertEqual(1, length(Crashes)),
+        [Crash] = Crashes,
+        ?assertMatch(#{
+                       crash_id := #{
+                                     class := crash,
+                                     reason := target_returned_crash
+                                    }
+                      },
+                     Crash),
+        ?assert(is_binary(maps:get(input_sha1, Crash))),
+        {ok, Files} = file:list_dir(ArtifactDir),
+        ?assertEqual(1,
+                     length([ File
+                              || File <:- Files,
+                                 lists:prefix("crash-", File),
+                                 not lists:suffix(".report", File) ])),
+        ?assertEqual(1,
+                     length([ File
+                              || File <:- Files,
+                                 lists:suffix(".report", File) ]))
+    after
+        _ = file:del_dir_r(TestDir)
+    end.
+
+
+%% 例外のクラッシュでも継続し、同じ crash_id の artifact を重複して作らない。
+continue_on_exception() ->
+    TestDir = test_directory(),
+    CorpusDir = filename:join(TestDir, "corpus"),
+    ArtifactDir = filename:join(TestDir, "artifacts"),
+    try
+        ok = prepare_directories(CorpusDir, ArtifactDir),
+        ok = file:write_file(filename:join(CorpusDir, "seed"), <<0>>),
+        Result =
+            fuzzer:run(#{
+                         target => fuzzer_error_target,
+                         runs => 10,
+                         max_length => 8,
+                         corpus => CorpusDir,
+                         artifacts => ArtifactDir,
+                         on_crash => continue
+                        }),
+        ?assertEqual(0, maps:get(exit_code, Result)),
+        Crashes = maps:get(crashes, Result),
+        ?assertEqual(1, length(Crashes)),
+        [Crash] = Crashes,
+        ?assertMatch(#{
+                       crash_id := #{
+                                     class := error,
+                                     reason := boom
+                                    }
+                      },
+                     Crash),
+        {ok, Files} = file:list_dir(ArtifactDir),
+        ?assertEqual(1,
+                     length([ File
+                              || File <:- Files,
+                                 lists:prefix("crash-", File),
+                                 not lists:suffix(".report", File) ])),
+        ?assertEqual(1,
+                     length([ File
+                              || File <:- Files,
+                                 lists:suffix(".report", File) ]))
+    after
+        _ = file:del_dir_r(TestDir)
+    end.
+
+
+%% タイムアウトしてもワーカーを作り直して継続し、タイムアウトを 1 件だけ残す。
+continue_on_timeout() ->
+    TestDir = test_directory(),
+    CorpusDir = filename:join(TestDir, "corpus"),
+    ArtifactDir = filename:join(TestDir, "artifacts"),
+    try
+        ok = prepare_directories(CorpusDir, ArtifactDir),
+        ok = file:write_file(filename:join(CorpusDir, "seed"), <<0>>),
+        Result =
+            fuzzer:run(#{
+                         target => fuzzer_timeout_target,
+                         runs => 3,
+                         max_length => 8,
+                         corpus => CorpusDir,
+                         artifacts => ArtifactDir,
+                         timeout => 1,
+                         on_crash => continue
+                        }),
+        ?assertEqual(0, maps:get(exit_code, Result)),
+        Crashes = maps:get(crashes, Result),
+        ?assertEqual(1, length(Crashes)),
+        [Crash] = Crashes,
+        ?assertMatch(#{crash_id := #{class := crash, reason := timeout}}, Crash),
+        {ok, Files} = file:list_dir(ArtifactDir),
+        ?assertEqual(1,
+                     length([ File
+                              || File <:- Files,
+                                 lists:prefix("crash-", File),
+                                 not lists:suffix(".report", File) ])),
+        ?assertEqual(1,
+                     length([ File
+                              || File <:- Files,
+                                 lists:suffix(".report", File) ]))
+    after
+        _ = file:del_dir_r(TestDir)
+    end.
+
+
+%% 異なる crash_id は別々に残し、同じ crash_id の入力は重複して残さない。
+continue_multiple_crashes() ->
+    TestDir = test_directory(),
+    CorpusDir = filename:join(TestDir, "corpus"),
+    ArtifactDir = filename:join(TestDir, "artifacts"),
+    try
+        ok = prepare_directories(CorpusDir, ArtifactDir),
+        ok = file:write_file(filename:join(CorpusDir, "a"), <<"a">>),
+        ok = file:write_file(filename:join(CorpusDir, "a2"), <<"a", 1>>),
+        ok = file:write_file(filename:join(CorpusDir, "b"), <<"b">>),
+        Result =
+            fuzzer:run(#{
+                         target => fuzzer_multi_crash_target,
+                         runs => 10,
+                         max_length => 8,
+                         corpus => CorpusDir,
+                         artifacts => ArtifactDir,
+                         on_crash => continue
+                        }),
+        ?assertEqual(0, maps:get(exit_code, Result)),
+        Crashes = maps:get(crashes, Result),
+        ?assertEqual(2, length(Crashes)),
+        Reasons =
+            lists:sort([ maps:get(reason, maps:get(crash_id, Crash))
+                         || Crash <:- Crashes ]),
+        ?assertEqual([bang, boom], Reasons),
+        {ok, Files} = file:list_dir(ArtifactDir),
+        ?assertEqual(2,
+                     length([ File
+                              || File <:- Files,
+                                 lists:prefix("crash-", File),
+                                 not lists:suffix(".report", File) ])),
+        ?assertEqual(2,
+                     length([ File
+                              || File <:- Files,
+                                 lists:suffix(".report", File) ]))
+    after
+        _ = file:del_dir_r(TestDir)
+    end.
+
+
+%% 同じ関数の別の行で起きた badmatch を別のクラッシュとして残す。
+crash_line_distinguishes() ->
+    TestDir = test_directory(),
+    CorpusDir = filename:join(TestDir, "corpus"),
+    ArtifactDir = filename:join(TestDir, "artifacts"),
+    try
+        ok = prepare_directories(CorpusDir, ArtifactDir),
+        ok = file:write_file(filename:join(CorpusDir, "zero"), <<0>>),
+        ok = file:write_file(filename:join(CorpusDir, "one"), <<1>>),
+        Result =
+            fuzzer:run(#{
+                         target => fuzzer_crash_line_target,
+                         runs => 10,
+                         max_length => 4,
+                         corpus => CorpusDir,
+                         artifacts => ArtifactDir,
+                         seed => 1,
+                         on_crash => continue
+                        }),
+        ?assertEqual(0, maps:get(exit_code, Result)),
+        Crashes = maps:get(crashes, Result),
+        ?assertEqual(2, length(Crashes)),
+        ?assertEqual([badmatch, badmatch],
+                     lists:sort([ maps:get(reason, maps:get(crash_id, Crash))
+                                  || Crash <:- Crashes ])),
+        Frames = [ maps:get(frame, maps:get(crash_id, Crash)) || Crash <:- Crashes ],
+        ?assertEqual(2, length(lists:usort(Frames))),
+        ?assert(lists:all(fun({fuzzer_crash_line_target, crash, 1, _Line}) ->
+                                  true;
+                             (_Frame) ->
+                                  false
+                          end,
+                          Frames))
+    after
+        _ = file:del_dir_r(TestDir)
+    end.
+
+
+%% 自動生成した辞書の一時ファイルが fuzzing 後に残らないことを確認する。
+auto_dict_cleanup() ->
+    TestDir = test_directory(),
+    CorpusDir = filename:join(TestDir, "corpus"),
+    ArtifactDir = filename:join(TestDir, "artifacts"),
+    try
+        ok = prepare_directories(CorpusDir, ArtifactDir),
+        ok = file:write_file(filename:join(CorpusDir, "seed"), <<0>>),
+        Result =
+            fuzzer:run(#{
+                         target => fuzzer_feature_target,
+                         runs => 10,
+                         max_length => 2,
+                         corpus => CorpusDir,
+                         artifacts => ArtifactDir,
+                         feedback => [fuzzer_dict_sample]
+                        }),
+        ?assertEqual(0, maps:get(exit_code, Result)),
+        {ok, Files} = file:list_dir(ArtifactDir),
+        ?assertEqual([],
+                     [ File
+                       || File <:- Files,
+                          lists:prefix(".fuzzer-auto-", File) ])
+    after
+        _ = file:del_dir_r(TestDir)
+    end.
+
+
 run_options() ->
     TestDir = test_directory(),
     CorpusDir = filename:join(TestDir, "corpus"),
@@ -146,7 +463,8 @@ run_options() ->
                          artifacts => ArtifactDir
                         }),
         ?assertEqual(0, maps:get(exit_code, Result)),
-        ?assertEqual(undefined, maps:get(coverage, Result))
+        ?assertEqual(undefined, maps:get(coverage, Result)),
+        ?assertEqual([], maps:get(crashes, Result))
     after
         unregister_receiver(),
         _ = file:del_dir_r(TestDir)
@@ -219,7 +537,8 @@ invalid_feature_report() ->
                                }),
         ?assertNotEqual(0, ExitStatus),
         Body = iolist_to_binary(read_reports(ArtifactDir)),
-        ?assertNotEqual(nomatch, binary:match(Body, <<"invalid_features">>))
+        ?assertNotEqual(nomatch, binary:match(Body, <<"invalid_features">>)),
+        ?assertNotEqual(nomatch, binary:match(Body, <<"crash_id">>))
     after
         _ = file:del_dir_r(TestDir)
     end.
@@ -243,7 +562,8 @@ exception_report() ->
         ?assertNotEqual(0, ExitStatus),
         Body = iolist_to_binary(read_reports(ArtifactDir)),
         ?assertNotEqual(nomatch, binary:match(Body, <<"boom">>)),
-        ?assertNotEqual(nomatch, binary:match(Body, <<"stacktrace">>))
+        ?assertNotEqual(nomatch, binary:match(Body, <<"stacktrace">>)),
+        ?assertNotEqual(nomatch, binary:match(Body, <<"crash_id">>))
     after
         _ = file:del_dir_r(TestDir)
     end.
@@ -409,7 +729,8 @@ timeout_report() ->
         % 1 秒でタイムアウトするはず。外部の EUnit タイムアウトまで待たない。
         ?assert(Elapsed < 15000),
         Body = iolist_to_binary(read_reports(ArtifactDir)),
-        ?assertNotEqual(nomatch, binary:match(Body, <<"timeout">>))
+        ?assertNotEqual(nomatch, binary:match(Body, <<"timeout">>)),
+        ?assertNotEqual(nomatch, binary:match(Body, <<"crash_id">>))
     after
         _ = file:del_dir_r(TestDir)
     end.
@@ -420,10 +741,21 @@ run_one() ->
     try
         ?assertEqual({ok, 0}, fuzzer:run_one(fuzzer_reset_target, <<0>>)),
         ?assertEqual([init, reset, evaluate, terminate], collect_callbacks([])),
-        ?assertMatch({crash, #{reason := {error, boom}, stacktrace := _}},
-                     fuzzer:run_one(fuzzer_error_target, <<0>>)),
-        ?assertMatch({crash, #{reason := {invalid_features, _}}},
-                     fuzzer:run_one(fuzzer_invalid_feature_target, <<0>>)),
+        {crash, ErrorReport} = fuzzer:run_one(fuzzer_error_target, <<0>>),
+        ?assertMatch(#{reason := {error, boom}, stacktrace := _}, ErrorReport),
+        ?assertMatch(#{
+                       class := error,
+                       reason := boom,
+                       frame := {fuzzer_error_target, evaluate, 1, _}
+                      },
+                     maps:get(crash_id, ErrorReport)),
+        {crash, HelperReport} = fuzzer:run_one(fuzzer_crash_helper_target, <<0>>),
+        ?assertMatch(#{frame := {fuzzer_crash_helper, boom, 0, _}},
+                     maps:get(crash_id, HelperReport)),
+        {crash, InvalidReport} = fuzzer:run_one(fuzzer_invalid_feature_target, <<0>>),
+        ?assertMatch(#{reason := {invalid_features, _}}, InvalidReport),
+        ?assertMatch(#{class := crash, reason := invalid_features},
+                     maps:get(crash_id, InvalidReport)),
         ?assertMatch({error, _}, fuzzer:run_one(fuzzer_no_such_target, <<0>>))
     after
         unregister_receiver()

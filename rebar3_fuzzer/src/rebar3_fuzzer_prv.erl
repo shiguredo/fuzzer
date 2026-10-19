@@ -75,6 +75,16 @@ format_error({invalid_option, Key, Value}) ->
     io_lib:format("Invalid option ~p: ~p", [Key, Value]);
 format_error({invalid_jobs, Jobs}) ->
     io_lib:format("Jobs must be greater than zero, and runs must be positive: ~p", [Jobs]);
+format_error({invalid_feedback, Value}) ->
+    io_lib:format("Invalid feedback module: ~p", [Value]);
+format_error({invalid_feedback_mode, Value}) ->
+    io_lib:format("Feedback mode must be line or clause: ~p", [Value]);
+format_error({invalid_on_crash, Value}) ->
+    io_lib:format("On-crash behavior must be abort or continue: ~p", [Value]);
+format_error({invalid_auto_dict, Value}) ->
+    io_lib:format("Auto dictionary must be true or false: ~p", [Value]);
+format_error({invalid_dict_modules, Value}) ->
+    io_lib:format("Invalid dictionary module: ~p", [Value]);
 format_error(Reason) ->
     io_lib:format("~p", [Reason]).
 
@@ -92,6 +102,11 @@ opts() ->
      {seed, undefined, "seed", integer, "Random seed"},
      {rss_limit_mb, undefined, "rss-limit-mb", integer, "RSS limit in megabytes"},
      {cover, undefined, "cover", string, "Comma-separated modules to measure coverage"},
+     {feedback, undefined, "feedback", string, "Comma-separated modules for coverage feedback"},
+     {feedback_mode, undefined, "feedback-mode", string, "Feedback mode: line or clause"},
+     {on_crash, undefined, "on-crash", string, "Crash handling: abort or continue"},
+     {auto_dict, undefined, "auto-dict", string, "Generate a dictionary from literals: true or false"},
+     {dict_modules, undefined, "dict-modules", string, "Comma-separated modules for automatic dictionary generation"},
      {repro, undefined, "repro", string, "Reproduce an artifact file"},
      {jobs, undefined, "jobs", integer, "Number of parallel fuzzing jobs"}].
 
@@ -155,6 +170,16 @@ parse_fuzz_options(State, Arguments, Config, Target) ->
         Artifacts = option_path(artifacts, Arguments, Config, DefaultArtifacts, State),
         Dict = option_absolute_path(option_value(dict, Arguments, Config, undefined), State),
         Cover = cover_value(Arguments, Config),
+        Feedback = feedback_value(Arguments, Config),
+        ok ?= validate_feedback_modules(Feedback),
+        FeedbackMode = feedback_mode_value(Arguments, Config),
+        ok ?= validate_feedback_mode(FeedbackMode),
+        OnCrash = on_crash_value(Arguments, Config),
+        ok ?= validate_on_crash(OnCrash),
+        AutoDict = auto_dict_value(Arguments, Config),
+        ok ?= validate_auto_dict(AutoDict),
+        DictModules = dict_modules_value(Arguments, Config),
+        ok ?= validate_dict_modules(DictModules),
         Jobs = option_value(jobs, Arguments, Config, 1),
         ok ?= validate_jobs(Jobs, Runs),
         {ok, #{
@@ -169,6 +194,10 @@ parse_fuzz_options(State, Arguments, Config, Target) ->
                seed => Seed,
                rss_limit_mb => RssLimit,
                cover => Cover,
+               feedback => feedback_config(Feedback, FeedbackMode),
+               on_crash => OnCrash,
+               auto_dict => AutoDict,
+               dict_modules => DictModules,
                jobs => Jobs
               }}
     end.
@@ -270,6 +299,245 @@ cover_value(Arguments, Config) ->
               || Module <:- string:split(rebar_utils:to_list(Value), ",", all),
                  string:trim(Module) =/= "" ]
     end.
+
+
+%% --feedback で指定されたモジュールを解析する。
+%%
+%% コマンドラインではカンマ区切りの文字列、rebar.config ではモジュールのリストを
+%% 受け付ける。空文字列や空リストは「フィードバックなし」を意味する。
+-spec feedback_value(proplists:proplist(), proplists:proplist()) -> [module()].
+feedback_value(Arguments, Config) ->
+    case option_value(feedback, Arguments, Config, undefined) of
+        undefined ->
+            [];
+        Value when is_list(Value) ->
+            case io_lib:printable_unicode_list(Value) of
+                true ->
+                    [ list_to_atom(string:trim(Module))
+                      || Module <:- string:split(Value, ",", all),
+                         string:trim(Module) =/= "" ];
+                false ->
+                    [ feedback_module(Module) || Module <:- Value ]
+            end;
+        Value ->
+            [feedback_module(Value)]
+    end.
+
+
+-spec feedback_module(term()) -> module().
+feedback_module(Module) when is_atom(Module) ->
+    Module;
+feedback_module(Module) when is_binary(Module) ->
+    try
+        binary_to_atom(Module, utf8)
+    catch
+        error:badarg ->
+            Module
+    end;
+feedback_module(Module) when is_list(Module) ->
+    try
+        list_to_atom(Module)
+    catch
+        error:badarg ->
+            Module
+    end;
+feedback_module(Value) ->
+    Value.
+
+
+-spec validate_feedback_modules([module()]) ->
+          ok | {error, {invalid_feedback, term()}}.
+validate_feedback_modules(Modules) ->
+    lists:foldl(fun(_Module, {error, _Reason} = Error) ->
+                        Error;
+                   (Module, ok) ->
+                        validate_feedback_module(Module)
+                end,
+                ok,
+                Modules).
+
+
+-spec validate_feedback_module(term()) -> ok | {error, {invalid_feedback, term()}}.
+validate_feedback_module(Module) when is_atom(Module) ->
+    Name = atom_to_list(Module),
+    case re:run(Name, "^[a-z][a-zA-Z0-9_@]*$", [{capture, none}]) of
+        match ->
+            ok;
+        nomatch ->
+            {error, {invalid_feedback, Module}}
+    end;
+validate_feedback_module(Value) ->
+    {error, {invalid_feedback, Value}}.
+
+
+%% --feedback-mode の値を line / clause のいずれかへ正規化する。
+-spec feedback_mode_value(proplists:proplist(), proplists:proplist()) ->
+          line | clause | {error, {invalid_feedback_mode, term()}}.
+feedback_mode_value(Arguments, Config) ->
+    case option_value(feedback_mode, Arguments, Config, line) of
+        line ->
+            line;
+        clause ->
+            clause;
+        Value when is_list(Value) ->
+            feedback_mode_string(string:lowercase(string:trim(Value)));
+        Value when is_binary(Value) ->
+            feedback_mode_string(string:lowercase(binary_to_list(Value)));
+        Value ->
+            {error, {invalid_feedback_mode, Value}}
+    end.
+
+
+-spec feedback_mode_string(string()) ->
+          line | clause | {error, {invalid_feedback_mode, string()}}.
+feedback_mode_string("line") ->
+    line;
+feedback_mode_string("clause") ->
+    clause;
+feedback_mode_string(Value) ->
+    {error, {invalid_feedback_mode, Value}}.
+
+
+-spec validate_feedback_mode(line | clause | {error, term()}) ->
+          ok | {error, term()}.
+validate_feedback_mode(line) ->
+    ok;
+validate_feedback_mode(clause) ->
+    ok;
+validate_feedback_mode({error, _Reason} = Error) ->
+    Error.
+
+
+%% --auto-dict の値を真偽値へ正規化する。
+-spec auto_dict_value(proplists:proplist(), proplists:proplist()) ->
+          boolean() | {error, {invalid_auto_dict, term()}}.
+auto_dict_value(Arguments, Config) ->
+    case option_value(auto_dict, Arguments, Config, true) of
+        true ->
+            true;
+        false ->
+            false;
+        Value when is_list(Value) ->
+            auto_dict_string(string:lowercase(string:trim(Value)));
+        Value when is_binary(Value) ->
+            auto_dict_string(string:lowercase(binary_to_list(Value)));
+        Value ->
+            {error, {invalid_auto_dict, Value}}
+    end.
+
+
+-spec auto_dict_string(string()) -> boolean() | {error, {invalid_auto_dict, string()}}.
+auto_dict_string("true") ->
+    true;
+auto_dict_string("false") ->
+    false;
+auto_dict_string(Value) ->
+    {error, {invalid_auto_dict, Value}}.
+
+
+-spec validate_auto_dict(boolean() | {error, term()}) -> ok | {error, term()}.
+validate_auto_dict(true) ->
+    ok;
+validate_auto_dict(false) ->
+    ok;
+validate_auto_dict({error, _Reason} = Error) ->
+    Error.
+
+
+%% --dict-modules で指定されたモジュールを解析する。
+%%
+%% コマンドラインではカンマ区切りの文字列、rebar.config ではモジュールのリストを
+%% 受け付ける。空文字列や空リストは「target と feedback から生成する」を意味する。
+-spec dict_modules_value(proplists:proplist(), proplists:proplist()) -> [module()].
+dict_modules_value(Arguments, Config) ->
+    case option_value(dict_modules, Arguments, Config, undefined) of
+        undefined ->
+            [];
+        Value when is_list(Value) ->
+            case io_lib:printable_unicode_list(Value) of
+                true ->
+                    [ list_to_atom(string:trim(Module))
+                      || Module <:- string:split(Value, ",", all),
+                         string:trim(Module) =/= "" ];
+                false ->
+                    [ feedback_module(Module) || Module <:- Value ]
+            end;
+        Value ->
+            [feedback_module(Value)]
+    end.
+
+
+-spec validate_dict_modules([module()]) ->
+          ok | {error, {invalid_dict_modules, term()}}.
+validate_dict_modules(Modules) ->
+    lists:foldl(fun(_Module, {error, _Reason} = Error) ->
+                        Error;
+                   (Module, ok) ->
+                        validate_dict_module(Module)
+                end,
+                ok,
+                Modules).
+
+
+-spec validate_dict_module(term()) -> ok | {error, {invalid_dict_modules, term()}}.
+validate_dict_module(Module) when is_atom(Module) ->
+    Name = atom_to_list(Module),
+    case re:run(Name, "^[a-z][a-zA-Z0-9_@]*$", [{capture, none}]) of
+        match ->
+            ok;
+        nomatch ->
+            {error, {invalid_dict_modules, Module}}
+    end;
+validate_dict_module(Value) ->
+    {error, {invalid_dict_modules, Value}}.
+
+
+%% --on-crash の値を abort / continue へ正規化する。
+-spec on_crash_value(proplists:proplist(), proplists:proplist()) ->
+          abort | continue | {error, {invalid_on_crash, term()}}.
+on_crash_value(Arguments, Config) ->
+    case option_value(on_crash, Arguments, Config, abort) of
+        abort ->
+            abort;
+        continue ->
+            continue;
+        Value when is_list(Value) ->
+            on_crash_string(string:lowercase(string:trim(Value)));
+        Value when is_binary(Value) ->
+            on_crash_string(string:lowercase(binary_to_list(Value)));
+        Value ->
+            {error, {invalid_on_crash, Value}}
+    end.
+
+
+-spec on_crash_string(string()) ->
+          abort | continue | {error, {invalid_on_crash, string()}}.
+on_crash_string("abort") ->
+    abort;
+on_crash_string("continue") ->
+    continue;
+on_crash_string(Value) ->
+    {error, {invalid_on_crash, Value}}.
+
+
+-spec validate_on_crash(abort | continue | {error, term()}) -> ok | {error, term()}.
+validate_on_crash(abort) ->
+    ok;
+validate_on_crash(continue) ->
+    ok;
+validate_on_crash({error, _Reason} = Error) ->
+    Error.
+
+
+%% rebar3 から fuzzer:run/1 へ渡す feedback オプションを組み立てる。
+%%
+%% モジュールが指定されていない場合は、fuzzer 側の既定値と同じ空リストにする。
+-spec feedback_config([module()], line | clause) ->
+          [] | #{modules := [module()], mode := line | clause}.
+feedback_config([], _Mode) ->
+    [];
+feedback_config(Modules, Mode) ->
+    #{modules => Modules, mode => Mode}.
 
 
 -spec default_directories(rebar_state:t(), string()) -> {string(), string()}.
@@ -644,6 +912,71 @@ cover_value_test_() ->
     [?_assertEqual([], cover_value([], [])),
      ?_assertEqual([], cover_value([], [{cover, ""}])),
      ?_assertEqual([rtp, sdp], cover_value([], [{cover, "rtp, sdp"}]))].
+
+
+feedback_value_test_() ->
+    [?_assertEqual([], feedback_value([], [])),
+     ?_assertEqual([], feedback_value([], [{feedback, ""}])),
+     ?_assertEqual([rtp, sdp], feedback_value([], [{feedback, "rtp, sdp"}])),
+     ?_assertEqual([rtp, sdp], feedback_value([], [{feedback, [rtp, sdp]}])),
+     ?_assertEqual([rtp], feedback_value([{feedback, "rtp"}], []))].
+
+
+validate_feedback_modules_test_() ->
+    [?_assertEqual(ok, validate_feedback_modules([rtp, sdp])),
+     ?_assertMatch({error, {invalid_feedback, _}},
+                   validate_feedback_modules(["Bad"])),
+     ?_assertMatch({error, {invalid_feedback, _}},
+                   validate_feedback_modules([123]))].
+
+
+feedback_mode_value_test_() ->
+    [?_assertEqual(line, feedback_mode_value([], [])),
+     ?_assertEqual(clause, feedback_mode_value([], [{feedback_mode, clause}])),
+     ?_assertEqual(clause, feedback_mode_value([{feedback_mode, "CLAUSE"}], [])),
+     ?_assertMatch({error, {invalid_feedback_mode, _}},
+                   feedback_mode_value([], [{feedback_mode, invalid}]))].
+
+
+feedback_config_test_() ->
+    [?_assertEqual([], feedback_config([], line)),
+     ?_assertEqual(#{modules => [rtp], mode => clause},
+                   feedback_config([rtp], clause))].
+
+
+on_crash_value_test_() ->
+    [?_assertEqual(abort, on_crash_value([], [])),
+     ?_assertEqual(continue, on_crash_value([{on_crash, "CONTINUE"}], [])),
+     ?_assertEqual(continue, on_crash_value([], [{on_crash, continue}])),
+     ?_assertMatch({error, {invalid_on_crash, _}},
+                   on_crash_value([], [{on_crash, invalid}]))].
+
+
+auto_dict_value_test_() ->
+    [?_assertEqual(true, auto_dict_value([], [])),
+     ?_assertEqual(false, auto_dict_value([{auto_dict, "FALSE"}], [])),
+     ?_assertEqual(false, auto_dict_value([], [{auto_dict, false}])),
+     ?_assertMatch({error, {invalid_auto_dict, _}},
+                   auto_dict_value([], [{auto_dict, invalid}]))].
+
+
+dict_modules_value_test_() ->
+    [?_assertEqual([], dict_modules_value([], [])),
+     ?_assertEqual([], dict_modules_value([], [{dict_modules, ""}])),
+     ?_assertEqual([parser, sdp],
+                   dict_modules_value([], [{dict_modules, "parser, sdp"}])),
+     ?_assertEqual([parser, sdp],
+                   dict_modules_value([], [{dict_modules, [parser, sdp]}])),
+     ?_assertEqual([], dict_modules_value([], [{dict_modules, undefined}]))].
+
+
+validate_dict_modules_test_() ->
+    [?_assertEqual(ok, validate_dict_modules([])),
+     ?_assertEqual(ok, validate_dict_modules([parser, sdp])),
+     ?_assertMatch({error, {invalid_dict_modules, _}},
+                   validate_dict_modules([<<"parser">>])),
+     ?_assertMatch({error, {invalid_dict_modules, _}},
+                   validate_dict_modules(["parser"]))].
 
 
 fuzzer_eval_test() ->

@@ -1,6 +1,6 @@
 {application, rebar3_fuzzer,
  [{description, "Run Erlang fuzz targets with libFuzzer"},
-  {vsn, "0.1.0"},
+  {vsn, "2026.0.0"},
   {registered, []},
   {applications, [kernel, stdlib]},
   {env, []},

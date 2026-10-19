@@ -2,14 +2,18 @@
 
 `rebar3_fuzzer` は、`fuzzer` の fuzz target を rebar3 から実行するためのプラグインです。
 
-現在は Hex パッケージを公開していません。
-次の設定は、`fuzzer` と `rebar3_fuzzer` を公開した後の利用方法です。
+`fuzzer` は Hex で `2026.1.0-canary.0` として公開しています。
+`rebar3_fuzzer` はこのリポジトリに含まれるプラグインで、Hex では公開していません。
 
-プロジェクトの `rebar.config` に `fuzzer` と `rebar3_fuzzer` を追加します。
+プロジェクトの `rebar.config` に次の設定を追加します。
 
 ```erlang
-{deps, [fuzzer]}.
-{project_plugins, [rebar3_fuzzer]}.
+{deps, [{fuzzer, "2026.1.0-canary.0"}]}.
+
+{project_plugins,
+ [{rebar3_fuzzer,
+   {git_subdir, "https://github.com/shiguredo/fuzzer.git",
+    {branch, "develop"}, "rebar3_fuzzer"}}]}.
 ```
 
 fuzz target を指定して fuzzing を実行します。
@@ -40,6 +44,11 @@ $ rebar3 fuzzer \
 | `--seed <value>` | 乱数シード |
 | `--rss-limit-mb <mb>` | RSS の上限 (MB) |
 | `--cover <modules>` | カンマ区切りのモジュール名。実行後にカバレッジを表示する |
+| `--feedback <modules>` | カンマ区切りのモジュール名。コードカバレッジを libFuzzer の探索に使う |
+| `--feedback-mode <mode>` | `line` / `clause`。既定値は `line` |
+| `--auto-dict <true\|false>` | リテラルから辞書を自動生成する。既定値は `true` |
+| `--dict-modules <modules>` | 自動辞書の生成元に target と一緒に使うモジュール (カンマ区切り) |
+| `--on-crash <mode>` | `abort` / `continue`。既定値は `abort` |
 | `--repro <path>` | artifact を再実行する。fuzzing は行わない |
 | `--jobs <n>` | N 個の BEAM を並列起動し、終了後にコーパスと artifact をマージする。`--runs` が 1 以上必要 |
 
@@ -79,6 +88,27 @@ _build/fuzz/<target>/
 `--cover` を指定した場合、`cover` で計測した Erlang カバレッジを実行後に表示します。
 計測対象のモジュールは `+debug_info` 付きでコンパイルされている必要があります。
 
+`--feedback` を指定した場合、Erlang コードの行または節の到達を libFuzzer の
+探索に使います。`--feedback-mode` で計測単位を選びます。
+
+- `line`: OTP の native coverage による行単位の計測
+- `clause`: parse transform による節単位の計測
+
+計測対象のモジュールは `+debug_info` 付きでコンパイルされている必要があります。
+BEAM に `+JPcover` を付ける必要はありません。`--feedback` と `--cover` は
+同時に指定できません。
+
+`--auto-dict false` を指定すると、リテラルからの辞書の自動生成を止めます。
+`--dict` を指定した場合、自動生成した辞書と利用者の辞書は 1 ファイルにまとめて
+から使われます。`--dict-modules` を指定すると、target に加えてそのモジュールの
+リテラルを辞書の生成元にします。
+
+`--on-crash continue` を指定すると、クラッシュしても BEAM を終了せずに fuzzing を
+続けます。クラッシュは `crash_id` で重複を除いて artifact に保存され、終了時に
+検出したクラッシュの一覧が表示されます。タイムアウトした場合はワーカーを作り直して
+続行します。クラッシュを 1 件でも検出した場合、終了コードは 0 ではありません。
+既定値は `abort` です。
+
 オプションは `rebar.config` にも指定できます。
 
 ```erlang
@@ -92,7 +122,18 @@ _build/fuzz/<target>/
           {max_total_time, 600},
           {seed, 1234},
           {rss_limit_mb, 4096},
+          {auto_dict, true},
+          {dict_modules, [example_parser]},
+          {on_crash, abort},
           {cover, [example_fuzz_target, example_parser]}]}.
+```
+
+`feedback` を使う場合は、`cover` の代わりに次のように指定します。
+
+```erlang
+{fuzzer, [{target, example_fuzz_target},
+          {feedback, [example_parser]},
+          {feedback_mode, line}]}.
 ```
 
 ## ライセンス

@@ -1,6 +1,8 @@
 # fuzzer
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub Actions](https://github.com/shiguredo/fuzzer/actions/workflows/ci.yml/badge.svg)](https://github.com/shiguredo/fuzzer/actions/workflows/ci.yml)
+[![hex.pm version](https://img.shields.io/hexpm/v/fuzzer.svg)](https://hex.pm/packages/fuzzer)
 [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/shiguredo)
 
 ## About Shiguredo's open source software
@@ -16,6 +18,8 @@ Please read <https://github.com/shiguredo/oss> before use.
 ## 概要
 
 `fuzzer` は、Erlang で実装した関数を libFuzzer から実行するためのライブラリです。
+`feedback` オプションを使うと、Erlang コードの行または節の到達を libFuzzer の
+探索に使えます。
 
 ## 使い方
 
@@ -32,11 +36,10 @@ fuzz target を実装します。`evaluate/1` が入力を処理し、到達し�
 evaluate(Data) ->
     % example_parser は利用者が用意する対象の関数
     % 到達した状態を feature bitmap として返す
-    try example_parser:decode(Data) of
+    % 例外は捕捉せず fuzzer に渡す。クラッシュレポートに理由とスタックトレースが残る。
+    case example_parser:decode(Data) of
         {ok, _Value} -> {ok, 1};
         {error, _Reason} -> {ok, 1 bsl 1}
-    catch
-        _:_ -> crash
     end.
 ```
 
@@ -52,12 +55,31 @@ rebar3 から実行する場合は `rebar3_fuzzer` を使います。
 $ rebar3 fuzzer --target example_fuzz_target --runs 10000
 ```
 
-Hex パッケージは未公開のため、現状はこのリポジトリをチェックアウトして利用します。
+`fuzzer` は Hex で公開しています。`rebar3_fuzzer` はこのリポジトリに含まれる
+プラグインで、Hex では公開していません。両方を使う場合、利用するプロジェクトの
+`rebar.config` に次の設定を追加します。
+
+```erlang
+{deps, [{fuzzer, "2026.1.0-canary.0"}]}.
+
+{project_plugins,
+ [{rebar3_fuzzer,
+   {git_subdir, "https://github.com/shiguredo/fuzzer.git",
+    {branch, "develop"}, "rebar3_fuzzer"}}]}.
+```
+
 導入方法、オプション、コーパス、クラッシュレポートは [doc/USAGE.md](doc/USAGE.md) を参照してください。
 
 ## 動作環境
 
-ビルドには Erlang/OTP 29.1 以上、rebar3、Clang と compiler-rt、`xxd` が必要です。
+`fuzzer` の NIF をビルドするには、次のものが必要です。
+
+- Erlang/OTP 29.1 以上
+- rebar3
+- Clang
+- Clang と同じバージョンの compiler-rt (`libclang_rt.fuzzer_no_main`)
+
+リポジトリのサンプルを実行する場合は、初期コーパスの変換に `xxd` も必要です。
 
 ## ドキュメント
 

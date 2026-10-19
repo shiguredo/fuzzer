@@ -4,19 +4,15 @@
 
 -export([evaluate/1]).
 
--type result() :: {ok, non_neg_integer()} | crash.
 
-
--spec evaluate(binary()) -> result().
+-spec evaluate(binary()) -> {ok, non_neg_integer()}.
 evaluate(Data) ->
-    try fuzzer_example_rtp:decode(Data) of
+    % 例外は捕捉せず fuzzer に渡す。クラッシュレポートに理由とスタックトレースが残る。
+    case fuzzer_example_rtp:decode(Data) of
         {ok, Packet} ->
             {ok, success_features(Packet)};
         {error, Reason} ->
             {ok, error_feature(Reason)}
-    catch
-        _Class:_Reason:_Stacktrace ->
-            crash
     end.
 
 

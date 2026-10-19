@@ -3,7 +3,7 @@
   % バージョンはリポジトリ直下の VERSION を唯一の情報源とする
   {vsn, {cmd, "cat VERSION | tr -d \"\n\""}},
   {registered, []},
-  {applications, [kernel, stdlib, crypto]},
+  {applications, [kernel, stdlib, crypto, syntax_tools]},
   {env, []},
   {licenses, ["Apache-2.0"]},
   {links, [{"GitHub", "https://github.com/shiguredo/fuzzer"}]},
