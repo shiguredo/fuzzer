@@ -74,8 +74,13 @@ Clang を更新した場合は `make clean` を実行してから NIF を再ビ�
 
 ## fuzz target の実装
 
-**fuzz target** は、libFuzzer の入力を Erlang の対象関数へ渡し、実行結果を **feature bitmap** に変換するモジュールである。
+**fuzz target** は、libFuzzer の入力を Erlang の対象関数へ渡し、実行結果を libFuzzer へ返すモジュールである。
 fuzz target は `fuzzer_target` behaviour を実装する。
+
+`evaluate/1` は通常 `ok` を返す。対象の関数が例外を送出した場合はクラッシュとして扱われ、
+その入力はクラッシュ入力として保存される。パーサーの行・節の到達を探索に使う場合は、
+`feedback` オプションで対象モジュールを指定する。意味的な状態を追加で伝えたい場合だけ
+`{ok, Features}` で feature bitmap を返す。両者は併用できる。
 
 ```erlang
 -module(example_fuzz_target).
@@ -84,38 +89,33 @@ fuzz target は `fuzzer_target` behaviour を実装する。
 
 -export([evaluate/1]).
 
--spec evaluate(binary()) -> {ok, non_neg_integer()} | crash.
-evaluate(Data) ->
-    % 例外は捕捉せず fuzzer に渡す。クラッシュレポートに理由とスタックトレースが残る。
-    case example_parser:decode(Data) of
-        {ok, Value} ->
-            {ok, success_features(Value)};
-        {error, too_short} ->
-            {ok, 1 bsl 0};
-        {error, invalid_header} ->
-            {ok, 1 bsl 1}
-    end.
 
--spec success_features(term()) -> non_neg_integer().
-success_features(Value) ->
-    Base = 1 bsl 2,
-    case Value of
-        #{extension := true} -> Base bor (1 bsl 3);
-        _ -> Base
+-spec evaluate(binary()) -> ok.
+evaluate(Data) ->
+    % example_parser は利用者が用意する対象の関数
+    % 通常の入力エラーは {error, Reason} として返るため、クラッシュにしない
+    % 例外は捕捉しないため、その入力はクラッシュ入力として保存される
+    case example_parser:decode(Data) of
+        {ok, _Value} ->
+            ok;
+        {error, _Reason} ->
+            ok
     end.
 ```
 
 `evaluate/1` は、次のいずれかを返す。
 
-- `{ok, Features}`: 入力を処理できた場合。`Features` は `0` 以上 `16#FFFFFFFFFFFFFFFF` 以下の整数
-- `crash`: クラッシュ入力として扱う場合
+- `ok`: 意味的な状態を報告しない場合。NIF には feature 0 として渡される
+- `{ok, Features}`: 意味的な状態を feature bitmap として返す場合。`Features` は `0` 以上 `16#FFFFFFFFFFFFFFFF` 以下の整数
 
-`evaluate/1` が例外を送出した場合もクラッシュとして扱われる。
-例外を自分で catch して `crash` を返すと、クラッシュレポートに例外の理由と
-スタックトレースが残らないため、捕捉せずに伝播させる。
+`evaluate/1` が例外を送出した場合はクラッシュとして扱われ、例外の理由と
+スタックトレースがクラッシュレポートに残る。例外を catch して `ok` を返すと
+クラッシュとして記録されないため、伝播させる。
 
-パーサーが不正な入力を通常のエラーとして返した場合、その結果を feature に割り当てる。
-通常の入力エラーを `crash` にすると、libFuzzer はその入力を直ちにクラッシュとして保存する。
+パーサーが不正な入力を通常のエラーとして返した場合も例外にしない。
+通常の入力エラーを例外にすると、libFuzzer はその入力を直ちにクラッシュとして保存する。
+エラーの種類を探索に使いたい場合は、`feedback` でパーサーの行・節の到達を渡すか、
+`{ok, Features}` で feature に割り当てる。
 
 ### コールバック
 
@@ -132,12 +132,12 @@ fuzz target は次のコールバックを実装できる。
 `init/0` はワーカーの作り直しで複数回呼ばれうるため、名前付き ETS やプロセス登録を
 行う場合は 2 回目以降も成功するように冪等にする。
 
-### feature bitmap の設計
+### feature bitmap を使う場合
 
-`Features` の各 bit には、fuzz target が到達した意味的な状態を割り当てる。
+`ok` を返す代わりに、到達した意味的な状態を feature bitmap として追加で伝えられる。
 同じ入力で複数の状態へ到達した場合は、対応する bit を `bor` で結合する。
 
-- 例外、`{ok, Features}` 以外の戻り値、64 bit の範囲外の feature はクラッシュ扱いになる。
+- 例外、`ok` と `{ok, Features}` 以外の戻り値、64 bit の範囲外の feature はクラッシュ扱いになる。
 - NIF は feature bitmap の各 bit と bitmap 全体のハッシュを libFuzzer のカウンターへ登録する。
 - ハッシュ用のカウンターは 4,096 個に集約しているため、bit の組み合わせが衝突する可能性がある。
   この数を増やすと衝突は減るが、libFuzzer が入力ごとに走査するコストが増える。
@@ -149,15 +149,22 @@ fuzz target は次のコールバックを実装できる。
 - ファイル、ネットワーク、ポートなどの外部資源を `evaluate/1` から触らない。
 - `evaluate/1` は libFuzzer から大量に呼ばれる。重い初期化は `init/0` に置く。
 - 状態を持つ fuzz target は `reset/0` を実装し、入力間で状態を持ち越さない。
-- 入力の検証で見つけた異常を、できるだけクラッシュではなく意味のある feature にする。
-- 到達してほしい分岐や状態を feature として明示する。これを設計しないと探索が進まない。
+- 入力の検証で見つけた異常を、できるだけクラッシュではなく意味のある結果として扱う。
 
 ### 実装例
 
-RTP と SDP の実装例は、次のファイルにある。
+RTP と SDP の実装例は、次のファイルにある。どちらも feature bitmap は返さず、
+`evaluate/1` は `ok` を返す。パーサーの行の到達だけを `feedback` で探索に使う。
 
 - `examples/rtp/src/fuzzer_example_rtp_fuzz_target.erl`
 - `examples/sdp/src/fuzzer_example_sdp_fuzz_target.erl`
+
+```erlang
+fuzzer:run(#{target => fuzzer_example_rtp_fuzz_target,
+             feedback => [fuzzer_example_rtp]}).
+```
+
+`make fuzz-rtp` と `make fuzz-sdp` も同じ設定で実行する。
 
 ## fuzzer の実行 API
 
@@ -165,7 +172,7 @@ RTP と SDP の実装例は、次のファイルにある。
 
 ```erlang
 fuzzer:run(#{target => example_fuzz_target,
-             runs => 10000,
+             max_total_time => 30,
              max_length => 4096,
              corpus => "_build/fuzz/example/corpus",
              artifacts => "_build/fuzz/example/artifacts"}).
@@ -226,7 +233,7 @@ fuzzing を続ける。クラッシュした入力は libFuzzer のコーパス�
 
 ```erlang
 fuzzer:run(#{target => example_fuzz_target,
-             runs => 100000,
+             max_total_time => 30,
              on_crash => continue}).
 ```
 
@@ -308,7 +315,7 @@ fuzzer:run(Target, Runs, MaxLength, CorpusDir, ArtifactDir).
 `fuzzer:run/1` と `fuzzer:run/5` は、fuzzing 専用の BEAM で呼び出す。
 libFuzzer が長時間 dirty CPU スケジューラーを 1 本占有するため、他の処理と同じ BEAM で動かさない。
 
-`evaluate/1` が `crash` を返した場合、または fuzz target のプロセスが終了した場合、libFuzzer は BEAM 全体を abort させる。
+`evaluate/1` が例外を送出した場合、または fuzz target のプロセスが終了した場合、libFuzzer は BEAM 全体を abort させる。
 このとき Erlang 側の後始末は行われない。
 
 ## rebar3_fuzzer
@@ -319,10 +326,11 @@ libFuzzer が長時間 dirty CPU スケジューラーを 1 本占有するた�
 ```console
 $ rebar3 fuzzer \
     --target example_fuzz_target \
-    --runs 10000 \
+    --max-total-time 30 \
     --max-length 4096
 ```
 
+`--max-total-time` は fuzzing 全体の制限時間秒である。
 `--runs` の既定値は `0` であり、`0` はクラッシュ検出かユーザーの中断まで実行を続ける。
 `--max-length` の既定値は `4096` である。
 
@@ -429,11 +437,11 @@ $ rebar3 fuzzer \
 
 ### CI での利用
 
-有限回の fuzzing を CI で回す場合は `--runs` を指定する。
+実行時間を区切る場合は `--max-total-time` を指定する。
 クラッシュや異常終了ではプラグインが非ゼロで終了する。
 
 ```console
-$ rebar3 fuzzer --target example_fuzz_target --runs 10000 --max-length 4096
+$ rebar3 fuzzer --target example_fuzz_target --max-total-time 30 --max-length 4096
 ```
 
 `--repro` を使うと、保存済みの artifact を CI で再現できる。
@@ -447,7 +455,7 @@ libFuzzer は新しい feature を検出した入力をコーパスへ追加す�
 
 ## クラッシュレポート
 
-`evaluate/1` が `crash` を返した場合、または例外を送出した場合、`artifacts` ディレクトリーへ libFuzzer の artifact と同じ SHA-1 を使ったレポートを書き出す。
+`evaluate/1` が例外を送出した場合、`artifacts` ディレクトリーへ libFuzzer の artifact と同じ SHA-1 を使ったレポートを書き出す。
 
 ```text
 artifacts/
@@ -463,7 +471,7 @@ artifacts/
 
 - `input_sha1`: 入力の SHA-1
 - `input_size`: 入力のバイト数
-- `reason`: 例外の種類と理由、または `target_returned_crash`、`{invalid_features, Features}`、`{invalid_return, Other}`、`{reset_failed, ...}`、`{feedback_failure, Reason}`
+- `reason`: 例外の種類と理由、または `{invalid_features, Features}`、`{invalid_return, Other}`、`{reset_failed, ...}`、`{feedback_failure, Reason}`
 - `stacktrace`: 例外のスタックトレース
 - `crash_id`: クラッシュの同一性を表すマップ
 - `timeout_ms`: タイムアウトの場合だけ入る
@@ -491,7 +499,7 @@ artifacts/
 
 ```erlang
 fuzzer:run(#{target => example_fuzz_target,
-             runs => 10000,
+             max_total_time => 30,
              corpus => "_build/fuzz/example/corpus",
              artifacts => "_build/fuzz/example/artifacts",
              cover => [example_fuzz_target, example_parser]}).
@@ -511,12 +519,11 @@ rebar3 の既定の設定では `debug_info` が付与される。
 ## フィードバックカバレッジ
 
 `feedback` オプションにモジュールのリストを指定すると、そのモジュールの行または節の
-到達を libFuzzer の feature として入力ごとに渡す。feature bitmap だけでは探索が
-進まないパーサーでも、コードの到達を手がかりに探索できる。
+到達を libFuzzer の feature として入力ごとに渡す。
 
 ```erlang
 fuzzer:run(#{target => example_fuzz_target,
-             runs => 100000,
+             max_total_time => 30,
              feedback => [example_parser]}).
 ```
 
@@ -593,7 +600,8 @@ Erlang の行番号を表示しない。実行中の `cov:` と `ft:` の数字�
 
 NIF は `libclang_rt.fuzzer_no_main` を静的リンクし、dirty CPU スケジューラーで `LLVMFuzzerRunDriver` を実行する。
 libFuzzer が入力を生成するたびに、NIF は通常スケジューラーで動作する Erlang ワーカーへバイナリーを送る。
-Erlang ワーカーは fuzz target の `evaluate/1` を呼び出し、feature bitmap または `crash` を NIF へ返す。
+Erlang ワーカーは fuzz target の `evaluate/1` を呼び出し、`ok` または feature bitmap を NIF へ返す。
+`evaluate/1` が例外を送出した場合は、クラッシュとして扱う。
 
 NIF は feature bitmap の各 bit と、bitmap 全体のハッシュを libFuzzer のカウンターへ登録する。
 これにより、bit の組み合わせも feature として扱われる。
@@ -609,7 +617,6 @@ RTP と SDP の fuzzing を同時に実行する場合は、それぞれ別の B
 - `feedback` と `cover` は同時に指定できない。
 - `feedback` の計測対象は fuzzing 中にリロードしてはならない。
 - `feedback` の 1 入力あたりのコストは行数と節数に比例する。上限は `fuzzer:max_feedback_counters/0` で確認できる。
-- Erlang コードの状態は feature bitmap でしか通知できない。探索を制御したい状態は明示的に feature へ割り当てる。
 - feature bitmap は 64 bit である。bit の組み合わせは 4,096 個のハッシュカウンターで表現するため、衝突の可能性がある。個々の bit も別のカウンターとして登録される。
 - ワーカーは 1 個を使い回す。状態を持つ fuzz target は `reset/0` を実装する。
 - BEAM 自体には ASan / UBSan を適用しない。
@@ -627,17 +634,18 @@ RTP と SDP の fuzzing を同時に実行する場合は、それぞれ別の B
 ### fuzz target を追加するとき
 
 - `-behaviour(fuzzer_target)` と `evaluate/1` を実装したか。
-- 通常の入力エラーを `crash` ではなく feature に割り当てたか。
-- 探索してほしい分岐や状態を feature bitmap に割り当てたか。
+- 通常の入力エラーを例外にせず、探索を継続できる結果を返したか。
+- 探索してほしい分岐の到達を `feedback` に割り当てたか。
 - コードカバレッジを探索に使う場合、`feedback` に対象モジュールを指定したか。
+- feature bitmap を使う場合、探索してほしい意味的な状態を feature に割り当てたか。
 - 状態を持つ場合に `reset/0` を実装したか。
 - 外部 I/O、乱数、時刻に依存していないか。
-- `evaluate/1` が 64 bit の範囲内の整数を返すか。
+- feature bitmap を返す場合、`evaluate/1` が 64 bit の範囲内の整数を返すか。
 
 ### 実行するとき
 
 - fuzzing 専用の BEAM で実行しているか。
-- 有限回で回す場合は `runs` を指定したか。
+- 実行時間や回数を区切る場合は `max_total_time` か `runs` を指定したか。
 - `timeout` を指定する場合は秒単位であることを確認したか。
 - `feedback` と `cover` を同時に指定していないか。
 - `feedback` の対象モジュールが `+debug_info` 付きでコンパイルされているか。

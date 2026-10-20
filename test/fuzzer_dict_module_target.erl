@@ -6,11 +6,11 @@
 -export([evaluate/1]).
 
 
--spec evaluate(binary()) -> {ok, non_neg_integer()} | crash.
+-spec evaluate(binary()) -> ok | {ok, non_neg_integer()}.
 evaluate(Data) ->
     case fuzzer_dict_sample:magic(Data) of
         ok ->
-            crash;
+            erlang:error(magic_cookie);
         error ->
             {ok, 0}
     end.

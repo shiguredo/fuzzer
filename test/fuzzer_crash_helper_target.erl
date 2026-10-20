@@ -6,6 +6,6 @@
 -export([evaluate/1]).
 
 
--spec evaluate(binary()) -> {ok, non_neg_integer()}.
+-spec evaluate(binary()) -> no_return().
 evaluate(_Data) ->
     fuzzer_crash_helper:boom().

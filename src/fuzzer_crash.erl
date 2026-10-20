@@ -38,8 +38,7 @@ id(Class, Reason, Stacktrace) ->
 %% クラッシュレポートからクラッシュ識別子を作る。
 %%
 %% 例外のレポートは reason が {Class, Reason}、stacktrace が入っている。
-%% それ以外のクラッシュ (target_returned_crash、timeout、feedback_failure など)
-%% は理由のタグだけを使う。
+%% それ以外のクラッシュ (timeout、feedback_failure など) は理由のタグだけを使う。
 -spec id_from_report(map()) -> crash_id().
 id_from_report(#{reason := {Class, Reason}, stacktrace := Stacktrace})
   when Class =:= error; Class =:= exit; Class =:= throw ->

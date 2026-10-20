@@ -23,7 +23,8 @@ Please read <https://github.com/shiguredo/oss> before use.
 
 ## 使い方
 
-fuzz target を実装します。`evaluate/1` が入力を処理し、到達した状態を feature bitmap として返します。
+fuzz target を実装します。`evaluate/1` が入力を処理し、`ok` を返します。
+対象の関数が例外を送出すると、その入力はクラッシュ入力として保存されます。
 
 ```erlang
 -module(example_fuzz_target).
@@ -32,27 +33,36 @@ fuzz target を実装します。`evaluate/1` が入力を処理し、到達し�
 
 -export([evaluate/1]).
 
--spec evaluate(binary()) -> {ok, non_neg_integer()} | crash.
+
+-spec evaluate(binary()) -> ok.
 evaluate(Data) ->
     % example_parser は利用者が用意する対象の関数
-    % 到達した状態を feature bitmap として返す
-    % 例外は捕捉せず fuzzer に渡す。クラッシュレポートに理由とスタックトレースが残る。
+    % 通常の入力エラーは {error, Reason} として返るため、クラッシュにしない
+    % 例外は捕捉しないため、その入力はクラッシュ入力として保存される
     case example_parser:decode(Data) of
-        {ok, _Value} -> {ok, 1};
-        {error, _Reason} -> {ok, 1 bsl 1}
+        {ok, _Value} ->
+            ok;
+        {error, _Reason} ->
+            ok
     end.
 ```
 
-`fuzzer:run/1` で実行します。
+例外を捕捉して `ok` を返すと、クラッシュとして記録されません。例外は伝播させます。
+
+`fuzzer:run/1` で実行します。次の例は 30 秒で打ち切ります。`feedback` に対象のモジュールを指定すると、Erlang コードの行または節の到達が libFuzzer の探索に使われます。
 
 ```erlang
-fuzzer:run(#{target => example_fuzz_target, runs => 10000}).
+fuzzer:run(#{target => example_fuzz_target,
+             max_total_time => 30,
+             feedback => [example_parser]}).
 ```
+
+意味的な状態を追加で伝えたい場合だけ、`evaluate/1` が `{ok, Features}` を返します。
 
 rebar3 から実行する場合は `rebar3_fuzzer` を使います。
 
 ```console
-$ rebar3 fuzzer --target example_fuzz_target --runs 10000
+rebar3 fuzzer --target example_fuzz_target --max-total-time 30
 ```
 
 `fuzzer` は Hex で公開しています。`rebar3_fuzzer` はこのリポジトリに含まれる
@@ -104,7 +114,7 @@ libFuzzer は LLVM プロジェクトの一部で、Apache License 2.0 with LLVM
 Apache License 2.0
 
 ```text
-Copyright 2026, Shiguredo Inc.
+Copyright 2026 Shiguredo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

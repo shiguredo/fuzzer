@@ -40,6 +40,10 @@ $ make clean
 RTP サンプルは、[RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) の固定ヘッダー、CSRC、header extension、padding を解析する。
 SDP サンプルは、[RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) の行構造と必須フィールドを解析する。
 
+どちらのサンプルも feature bitmap は返さず、`evaluate/1` は `ok` を返す。
+パーサーの行の到達は `fuzzer:run/1` の `feedback` に対象のパーサーモジュールを指定して
+libFuzzer の探索に使う。
+
 RTP と SDP の fuzzing をそれぞれ 10,000 回実行する。
 
 ```console

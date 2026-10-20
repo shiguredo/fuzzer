@@ -6,8 +6,8 @@
 -export([evaluate/1]).
 
 
--spec evaluate(binary()) -> {ok, non_neg_integer()} | crash.
+-spec evaluate(binary()) -> ok | {ok, non_neg_integer()}.
 evaluate(<<16#2112A442:32, _Rest/binary>>) ->
-    crash;
+    erlang:error(magic_cookie);
 evaluate(_Data) ->
     {ok, 0}.

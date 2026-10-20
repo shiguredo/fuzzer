@@ -1,4 +1,4 @@
 -module(fuzzer_target).
 
 
--callback evaluate(binary()) -> {ok, non_neg_integer()} | crash.
+-callback evaluate(binary()) -> ok | {ok, non_neg_integer()}.

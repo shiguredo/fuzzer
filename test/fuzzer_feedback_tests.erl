@@ -324,8 +324,8 @@ continue_feedback() ->
               [Crash] = Crashes,
               ?assertMatch(#{
                              crash_id := #{
-                                           class := crash,
-                                           reason := target_returned_crash
+                                           class := error,
+                                           reason := abc
                                           }
                             },
                            Crash),

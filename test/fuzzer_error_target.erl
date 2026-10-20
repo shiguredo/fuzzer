@@ -6,6 +6,6 @@
 
 
 %% 必ず例外を送出し、クラッシュレポートにスタックトレースが残ることを検証する。
--spec evaluate(binary()) -> {ok, non_neg_integer()} | crash.
+-spec evaluate(binary()) -> no_return().
 evaluate(_Data) ->
     erlang:error(boom).

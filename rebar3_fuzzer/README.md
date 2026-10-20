@@ -22,15 +22,16 @@ fuzz target を指定して fuzzing を実行します。
 $ rebar3 fuzzer --target example_fuzz_target
 ```
 
-実行回数と入力の最大バイト数を指定できます。
+実行時間と入力の最大バイト数を指定できます。
 
 ```console
 $ rebar3 fuzzer \
     --target example_fuzz_target \
-    --runs 10000 \
+    --max-total-time 30 \
     --max-length 4096
 ```
 
+`--max-total-time` は fuzzing 全体の制限時間秒です。
 `--runs 0` は、クラッシュを検出するか、ユーザーが中断するまで実行を続けます。
 `--runs` の既定値は `0`、`--max-length` の既定値は `4096` です。
 

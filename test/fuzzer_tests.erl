@@ -237,8 +237,8 @@ continue_on_crash() ->
         [Crash] = Crashes,
         ?assertMatch(#{
                        crash_id := #{
-                                     class := crash,
-                                     reason := target_returned_crash
+                                     class := error,
+                                     reason := target_crash
                                     }
                       },
                      Crash),
@@ -740,6 +740,8 @@ run_one() ->
     true = register(fuzzer_test_receiver, self()),
     try
         ?assertEqual({ok, 0}, fuzzer:run_one(fuzzer_reset_target, <<0>>)),
+        % ok を返す target は feature bitmap を報告しないものとして扱う。
+        ?assertEqual({ok, 0}, fuzzer:run_one(fuzzer_feedback_target, <<"x">>)),
         ?assertEqual([init, reset, evaluate, terminate], collect_callbacks([])),
         {crash, ErrorReport} = fuzzer:run_one(fuzzer_error_target, <<0>>),
         ?assertMatch(#{reason := {error, boom}, stacktrace := _}, ErrorReport),

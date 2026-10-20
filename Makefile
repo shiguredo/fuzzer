@@ -57,6 +57,10 @@ endif
 NIF_CFLAGS := $(CFLAGS) -g -O1 -fPIC -fno-omit-frame-pointer -fsanitize=fuzzer-no-link -I$(ERTS_INCLUDE_DIR) \
               -DFUZZER_LIBFUZZER_VERSION='"$(LIBFUZZER_VERSION)"'
 
+# fuzzer:run/1 の結果マップから終了コードを決める。
+# クラッシュ一覧が空でない場合は、libFuzzer の exit_code が 0 でも失敗として扱う。
+FUZZ_EXIT_CODE := case {maps:get(exit_code, Result), maps:get(crashes, Result)} of {0, []} -> halt(0); {0, _} -> halt(1); {Code, _} -> halt(Code) end.
+
 .PHONY: all compile erlang nif test plugin-test lint fuzz-smoke fuzz-rtp fuzz-rtp-smoke fuzz-sdp fuzz-sdp-smoke clean prepare-rtp prepare-sdp toolchain-info publish
 
 all: compile
@@ -105,16 +109,16 @@ prepare-sdp: compile
 fuzz-smoke: fuzz-rtp-smoke fuzz-sdp-smoke
 
 fuzz-rtp: prepare-rtp
-	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'case fuzzer:run(fuzzer_example_rtp_fuzz_target, 0, 2048, "$(abspath $(RTP_CORPUS))", "$(abspath $(RTP_ARTIFACTS))/") of 0 -> halt(0); Code -> halt(Code) end.'
+	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'Result = fuzzer:run(#{target => fuzzer_example_rtp_fuzz_target, runs => 0, max_length => 2048, corpus => "$(abspath $(RTP_CORPUS))", artifacts => "$(abspath $(RTP_ARTIFACTS))/", feedback => [fuzzer_example_rtp]}), $(FUZZ_EXIT_CODE)'
 
 fuzz-rtp-smoke: prepare-rtp
-	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'case fuzzer:run(fuzzer_example_rtp_fuzz_target, 10000, 2048, "$(abspath $(RTP_CORPUS))", "$(abspath $(RTP_ARTIFACTS))/") of 0 -> halt(0); Code -> halt(Code) end.'
+	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'Result = fuzzer:run(#{target => fuzzer_example_rtp_fuzz_target, runs => 10000, max_length => 2048, corpus => "$(abspath $(RTP_CORPUS))", artifacts => "$(abspath $(RTP_ARTIFACTS))/", feedback => [fuzzer_example_rtp]}), $(FUZZ_EXIT_CODE)'
 
 fuzz-sdp: prepare-sdp
-	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'case fuzzer:run(fuzzer_example_sdp_fuzz_target, 0, 16384, "$(abspath $(SDP_CORPUS))", "$(abspath $(SDP_ARTIFACTS))/") of 0 -> halt(0); Code -> halt(Code) end.'
+	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'Result = fuzzer:run(#{target => fuzzer_example_sdp_fuzz_target, runs => 0, max_length => 16384, corpus => "$(abspath $(SDP_CORPUS))", artifacts => "$(abspath $(SDP_ARTIFACTS))/", feedback => [fuzzer_example_sdp]}), $(FUZZ_EXIT_CODE)'
 
 fuzz-sdp-smoke: prepare-sdp
-	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'case fuzzer:run(fuzzer_example_sdp_fuzz_target, 10000, 16384, "$(abspath $(SDP_CORPUS))", "$(abspath $(SDP_ARTIFACTS))/") of 0 -> halt(0); Code -> halt(Code) end.'
+	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'Result = fuzzer:run(#{target => fuzzer_example_sdp_fuzz_target, runs => 10000, max_length => 16384, corpus => "$(abspath $(SDP_CORPUS))", artifacts => "$(abspath $(SDP_ARTIFACTS))/", feedback => [fuzzer_example_sdp]}), $(FUZZ_EXIT_CODE)'
 
 toolchain-info:
 	$(CC) --version

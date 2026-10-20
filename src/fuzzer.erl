@@ -4,7 +4,12 @@
 %%   fuzzer:run/1 または run/5 を呼ぶと、NIF が dirty CPU スケジューラーで
 %%   LLVMFuzzerRunDriver を実行する。libFuzzer が入力を生成するたびに、NIF は
 %%   通常スケジューラーで動く 1 個の Erlang ワーカーへバイナリーを送る。
-%%   ワーカーは fuzz target の evaluate/1 を呼び、feature bitmap または crash を返す。
+%%   ワーカーは fuzz target の evaluate/1 を呼び、ok または feature bitmap を返す。
+%%   クラッシュは例外で通知する。
+%%
+%% 探索:
+%%   パーサーの行・節の到達は feedback オプションで対象のモジュールを指定して
+%%   libFuzzer へ渡す。意味的な状態を追加で伝えたい場合だけ feature bitmap を返す。
 %%
 %% feature bitmap:
 %%   0 以上 16#FFFFFFFFFFFFFFFF 以下の 64 bit 値。fuzz target が到達した意味的な
@@ -12,13 +17,11 @@
 %%   カウンターへ反映する。
 %%
 %% クラッシュ:
-%%   crash が返るかワーカーが終了すると、libFuzzer は BEAM 全体を終了する。
+%%   evaluate/1 が例外を送出するかワーカーが終了すると、libFuzzer は BEAM 全体を終了する。
 %%   その前に、artifact と同じ SHA-1 を持つレポートを artifacts ディレクトリーへ書く。
 %%
 %% カバレッジ:
 %%   cover オプションで指定した Erlang モジュールのカバレッジを実行後に返す。
-%%   feedback オプションで指定した Erlang モジュールの行または節の到達を、
-%%   libFuzzer の探索用 feature として入力ごとに渡す。
 %%
 %% このモジュールは fuzzing 専用の BEAM で使うこと。他の処理と同じ BEAM で
 %% 長時間実行すると、dirty CPU スケジューラーを 1 本占有し続ける。
@@ -1064,19 +1067,14 @@ evaluate(Target, Data, FeedbackState, HasReset) ->
           {ok, non_neg_integer(), binary()} | {crash, map()}.
 evaluate_target(Target, Data, FeedbackState, ResetLine) ->
     try Target:evaluate(Data) of
+        ok ->
+            evaluate_features(0, FeedbackState, ResetLine);
         {ok, Features} when is_integer(Features),
                             Features >= 0,
                             Features =< ?MAX_FEATURES ->
-            case read_feedback(FeedbackState, ResetLine) of
-                {ok, Counters} ->
-                    {ok, Features, Counters};
-                {error, Reason} ->
-                    feedback_failure(Reason)
-            end;
+            evaluate_features(Features, FeedbackState, ResetLine);
         {ok, Features} ->
             {crash, crash_report(#{reason => {invalid_features, Features}})};
-        crash ->
-            {crash, crash_report(#{reason => target_returned_crash})};
         Other ->
             {crash, crash_report(#{reason => {invalid_return, Other}})}
     catch
@@ -1087,6 +1085,20 @@ evaluate_target(Target, Data, FeedbackState, ResetLine) ->
                   stacktrace => Stacktrace
                  },
             {crash, crash_report(Report)}
+    end.
+
+
+%% feature bitmap と、その入力のフィードバックカウンターをまとめて返す。
+-spec evaluate_features(non_neg_integer(),
+                        undefined | fuzzer_feedback:state(),
+                        boolean()) ->
+          {ok, non_neg_integer(), binary()} | {crash, map()}.
+evaluate_features(Features, FeedbackState, ResetLine) ->
+    case read_feedback(FeedbackState, ResetLine) of
+        {ok, Counters} ->
+            {ok, Features, Counters};
+        {error, Reason} ->
+            feedback_failure(Reason)
     end.
 
 

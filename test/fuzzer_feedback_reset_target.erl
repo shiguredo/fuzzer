@@ -8,13 +8,13 @@
 -export([evaluate/1, reset/0]).
 
 
--spec evaluate(binary()) -> {ok, non_neg_integer()} | crash.
+-spec evaluate(binary()) -> ok.
 evaluate(Data) ->
     case fuzzer_feedback_parser:check(Data) of
         true ->
-            crash;
+            erlang:error(abc);
         false ->
-            {ok, 0}
+            ok
     end.
 
 
